@@ -22,7 +22,7 @@ function setup_model(L, p)
     # on 2x2 might be:
     # 1   5 
     # 1   1 
-    # not sure what to do with boundary conditions yet 
+    # where due to periodic boundary conditions, the 5 will loop around
 
     hamiltonian_placements = [(rand() < p ? 1 : 5) for _ = 1:L, _ = 1:L]
 
@@ -102,58 +102,12 @@ function calculate_delta_E(i, j, L, hamiltonian_placements, spins)
 
 end
 
-function mcmc_step(L, hamiltonian_placements, spins, beta)
-    """ Old version of the code that calculates an mcmc step, from an initial all zeroes spin flip matrix."""
-    total_rate = 0.0
-
-    # matrix containing flip rates at each site 
-    flip_rate = zeros(L, L)
-
-    for j = 1:L, i = 1:L
-
-        delta_E = calculate_delta_E(i, j, L, hamiltonian_placements, spins)
-
-        w_i = 1 / (1+exp(beta * delta_E))
-
-        total_rate += w_i
-
-        flip_rate[i, j] = w_i
-    end
-
-    # if total rate is zero, the state is frozen and no flip happens. this shouldn't occur with normal usage 
-    if total_rate == 0.0
-        return (nothing, Inf) #simulation stops
-    end
-
-    #calculate delta T, 
-
-    delta_T = - log(rand()) / total_rate
-
-    # calculate the chosen flipped spin with the algorithm mentioned in the supp
-
-    spin_choice = rand()*total_rate
-
-    for j = 1:L, i = 1:L
-
-        spin_choice -= flip_rate[i, j]
-
-        if spin_choice < 0
-
-            return (i, j), delta_T
-        end
-    end
-
-    # in case loop fails, return nothing
-
-    return (nothing, delta_T)
-
-end
-
 function initialize_rates(L, hamiltonian_placements, spins, beta)
     total_rate = 0.0
 
     # matrix containing flip rates at each site 
-    flip_rate = zeros(L, L)
+    # flip rate is now a fenwick tree
+    flip_rate = FenwickTree{Float64}(L * L)
 
     for j = 1:L, i = 1:L
 
@@ -162,8 +116,7 @@ function initialize_rates(L, hamiltonian_placements, spins, beta)
         w_i = 1 / (1+exp(beta * delta_E))
 
         total_rate += w_i
-
-        flip_rate[i, j] = w_i
+        inc!(flip_rates, to_1d(i, j, L), w_i)
     end
 
     return (flip_rate, total_rate)
@@ -177,6 +130,7 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
     Modifies spins and flip_rates in place.
     Returns the coordinates of the flipped spin (i, j), the time step delta_T,
     and the *updated* total_rate
+    Now uses a FenwickTree as the datastructure 
     """
 
     # Handle frozen state
@@ -191,23 +145,11 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
     # calculate the chosen flipped spin with the algorithm mentioned in the supp
     spin_choice = rand()*total_rate
 
-    flipped_i = 0
+    # datastructures replaces old code with Fenwick Tree- finds which spin to flip in O(log(N)) time 
+    index_1d = DataStructures.index_at_prefixsum(flip_rates, spin_choice)
+    (flipped_i, flipped_j) = to_2d(index_1d, L)
 
-    flipped_j = 0
-
-    old_rate_k = 0.0 # Store the old rate of the flipped spin
-
-    for j = 1:L, i = 1:L
-
-        spin_choice -= flip_rates[i, j]
-
-        if spin_choice < 0
-            flipped_i = i
-            flipped_j = j
-            old_rate_k = flip_rates[i, j] # x
-            break
-        end
-    end
+    old_rate_k = flip_rates[index_1d] - (index_1d == 1 ? 0.0 : flip_rates[index_1d - 1])
 
     # Check if a spin was actually found (should always happen if total_rate > 0)
     if flipped_i == 0
@@ -217,29 +159,37 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
     end
 
     spins[flipped_i, flipped_j] *= -1
-
+        # 1. Calculate the new rate for the flipped spin
     new_delta_E_k =
         calculate_delta_E(flipped_i, flipped_j, L, hamiltonian_placements, spins)
-    new_rate_k = 1/(1+exp(beta*new_delta_E_k))
-    flip_rates[flipped_i, flipped_j] = new_rate_k
+    new_rate_k = 1 / (1 + exp(beta * new_delta_E_k))
+
+    # 2. Update the FenwickTree. This is an O(log N) operation.
+    DataStructures.update!(flip_rates, index_k_1d, new_rate_k)
+
+    # 3. Update the total_rate incrementally
     total_rate = total_rate - old_rate_k + new_rate_k
 
     # have to update the neighbor's spin flips too
-
     for (ni, nj) in find_neighbors(flipped_i, flipped_j, L)
 
-        old_rate_j = flip_rates[ni, nj]
+        # 1. Get the 1D index for this neighbor
+        index_j_1d = to_1d(ni, nj, L)
 
+        # 2. Get the neighbor's OLD rate (using the O(log N) prefix sum trick)
+        old_rate_j = flip_rates[index_j_1d] - (index_j_1d == 1 ? 0.0 : flip_rates[index_j_1d - 1])
+
+        # 3. Calculate the neighbor's NEW rate (this is unchanged)
         new_delta_E_j = calculate_delta_E(ni, nj, L, hamiltonian_placements, spins)
+        new_rate_j = 1 / (1 + exp(beta * new_delta_E_j)) 
 
-        new_rate_j = 1/(1+exp(beta * new_delta_E_j))
+        # 4. Update the FenwickTree with the new rate
+        DataStructures.update!(flip_rates, index_j_1d, new_rate_j)
 
-        flip_rates[ni, nj] = new_rate_j
-
+        # 5. Update the total_rate incrementally
         total_rate = total_rate - old_rate_j + new_rate_j
 
     end
-
 
     return ((flipped_i, flipped_j), delta_T, total_rate)
 
@@ -261,17 +211,21 @@ function run_simulation_efficient(L, p, beta, T_max, snapshot_interval)
     end
 
     flip_rates, total_rate = initialize_rates(L, hamiltonian_placements, spins, beta)
+    
 
     while current_time < T_max
 
         # perform a step, and get the spin coordinates and the change in time 
         ((flipped_i, flipped_j), delta_T, total_rate) =
             mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_rate)
+
         # in this case, loop in mcmc_step failed 
         if flipped_i == 0
             print("Mcmc step did not flip a spin, simulation stopping")
             break
         end
+        # i think this isn't possible anymore- would get error in FenwickTree?
+
         current_time += delta_T
 
         while current_time >= next_snapshot_time

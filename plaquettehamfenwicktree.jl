@@ -123,6 +123,44 @@ function initialize_rates(L, hamiltonian_placements, spins, beta)
 
 end
 
+"""
+Performs a binary search on the FenwickTree to find the index `i`
+such that tree[i-1] < value <= tree[i].
+This is the O(log N)^2 spin selection.
+"""
+function find_index_at_prefixsum(tree, value)
+    N = length(tree)
+    low = 1
+    high = N
+    
+    # Handle edge cases
+    if value <= 0.0
+        return 1
+    end
+    if value > tree[high]
+        # This can happen due to floating point rounding.
+        # Just return the last valid index.
+        return N
+    end
+
+    # Standard binary search
+    while low < high
+        mid = (low + high) ÷ 2
+        
+        # Get the prefix sum at the midpoint
+        # This query is O(log N)
+        prefix_sum_at_mid = tree[mid] 
+        
+        if prefix_sum_at_mid < value
+            low = mid + 1 # The index must be in the upper half
+        else
+            high = mid # The index is in the lower half (or is mid)
+        end
+    end
+    
+    return low # 'low' is now the first index i where tree[i] >= value
+end
+
 function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_rate)
     """New version of mcmc step, it takes in a flip_rates and total_rates. """
     """
@@ -146,7 +184,7 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
     spin_choice = rand()*total_rate
 
     # datastructures replaces old code with Fenwick Tree- finds which spin to flip in O(log(N)) time 
-    index_1d = DataStructures.index_at_prefixsum(flip_rates, spin_choice)
+    index_1d = find_index_at_prefixsum(flip_rates, spin_choice)  
     (flipped_i, flipped_j) = to_2d(index_1d, L)
 
     old_rate_k = flip_rates[index_1d] - (index_1d == 1 ? 0.0 : flip_rates[index_1d-1])
@@ -159,35 +197,37 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
     end
 
     spins[flipped_i, flipped_j] *= -1
+
     # 1. Calculate the new rate for the flipped spin
     new_delta_E_k =
         calculate_delta_E(flipped_i, flipped_j, L, hamiltonian_placements, spins)
     new_rate_k = 1 / (1 + exp(beta * new_delta_E_k))
 
-    # 2. Update the FenwickTree. This is an O(log N) operation.
-    DataStructures.update!(flip_rates, index_k_1d, new_rate_k)
+    # 2. Calculate the CHANGE in rate
+    delta_k = new_rate_k - old_rate_k
 
-    # 3. Update the total_rate incrementally
+    # 3. Increment the FenwickTree by that change. This is the O(log N) update.
+    inc!(flip_rates, index_1d, delta_k)
+
+    # 4. Update the total_rate incrementally
     total_rate = total_rate - old_rate_k + new_rate_k
 
     # have to update the neighbor's spin flips too
     for (ni, nj) in find_neighbors(flipped_i, flipped_j, L)
 
-        # 1. Get the 1D index for this neighbor
         index_j_1d = to_1d(ni, nj, L)
+        old_rate_j = flip_rates[index_j_1d] - (index_j_1d == 1 ? 0.0 : flip_rates[index_j_1d - 1])
 
-        # 2. Get the neighbor's OLD rate (using the O(log N) prefix sum trick)
-        old_rate_j =
-            flip_rates[index_j_1d] - (index_j_1d == 1 ? 0.0 : flip_rates[index_j_1d-1])
-
-        # 3. Calculate the neighbor's NEW rate (this is unchanged)
         new_delta_E_j = calculate_delta_E(ni, nj, L, hamiltonian_placements, spins)
-        new_rate_j = 1 / (1 + exp(beta * new_delta_E_j))
+        new_rate_j = 1 / (1 + exp(beta * new_delta_E_j)) 
 
-        # 4. Update the FenwickTree with the new rate
-        DataStructures.update!(flip_rates, index_j_1d, new_rate_j)
+        # 4. Calculate the CHANGE in rate for the neighbor
+        delta_j = new_rate_j - old_rate_j
 
-        # 5. Update the total_rate incrementally
+        # 5. Increment the FenwickTree by that change
+        inc!(flip_rates, index_j_1d, delta_j)
+
+        # 6. Update the total_rate incrementally
         total_rate = total_rate - old_rate_j + new_rate_j
 
     end
@@ -238,7 +278,7 @@ function run_simulation(L, p, beta, T_max, snapshot_interval)
 
     end
 
-    return snapshot_list
+    return snapshot_list, hamiltonian_placements
 end
 
 
@@ -316,26 +356,36 @@ function average_curves(list_of_curves)
 end
 
 function run_experiment(L, p, beta, T_max, snapshot_interval, t_w1, t_w2, num_runs)
+    # currently set to just return energy vs time
 
-    all_runs_c_tw1 = []
-    all_runs_c_tw2 = []
+
+    # all_runs_c_tw1 = []
+    # all_runs_c_tw2 = []
+    all_runs_energy = []
 
     for i = 1:num_runs
 
         println("Running simulation $i of $num_runs")
 
-        snapshot_list = run_simulation(L, p, beta, T_max, snapshot_interval)
-        correlations_t_w1 = calculate_correlation(snapshot_list, snapshot_interval, L, t_w1)
-        correlations_t_w2 = calculate_correlation(snapshot_list, snapshot_interval, L, t_w2)
+        snapshot_list, hamiltonian_placements = run_simulation(L, p, beta, T_max, snapshot_interval)
+        # correlations_t_w1 = calculate_correlation(snapshot_list, snapshot_interval, L, t_w1)
+        # correlations_t_w2 = calculate_correlation(snapshot_list, snapshot_interval, L, t_w2)
+        # push!(all_runs_c_tw1, correlations_t_w1)
+        # push!(all_runs_c_tw2, correlations_t_w2)
 
-        push!(all_runs_c_tw1, correlations_t_w1)
-        push!(all_runs_c_tw2, correlations_t_w2)
+        energy_history = []
+        for spins_at_t in snapshot_list
+            # Call the O(N) function *here*, outside the simulation loop
+            current_energy = calculate_total_energy(L, hamiltonian_placements, spins_at_t)
+            push!(energy_history, current_energy)
+        end 
 
+        push!(all_runs_energy, energy_history)
     end
 
     #return averaged results 
 
-    return (average_curves(all_runs_c_tw1), average_curves(all_runs_c_tw2))
+    return average_curves(all_runs_energy)
 
 end
 
@@ -389,9 +439,15 @@ function main()
     println("Parsing arguments...")
     parsed_args = parse_commandline()
 
+    println("Arguments passed into code:")
+    println("----------------------------")
+    println(parsed_args)
+    println("----------------------------")
+
     # 2. Run the full, averaged experiment
     println("Starting experiment...")
-    (avg_c_tw1, avg_c_tw2) = run_experiment(
+    # (avg_c_tw1, avg_c_tw2) = run_experiment(
+    avg_energy = run_experiment(
         parsed_args["L"],
         parsed_args["p"],
         parsed_args["beta"],
@@ -404,35 +460,44 @@ function main()
     println("Experiment complete. Saving results...")
 
     # 3. Save the results to a CSV file
+    min_len_energy = length(avg_energy)
+    if min_len_energy == 0
+        println("Warning: No energy data was generated. Exiting.")
+        return
+    end
+
+    time_axis_energy = (1:min_len_energy) .* parsed_args["snapshot_interval"] # 
+    df = DataFrame(time = time_axis_energy, avg_energy = avg_energy)
+    CSV.write(parsed_args["output_file"], df)
 
     # We need to create the time axis for the plot
     # C(t_w, t') is a function of (t' - t_w)
     # Both curves start at (t' - t_w) = 0
 
-    # Find the shortest curve, as average_curves did
-    min_len_1 = length(avg_c_tw1)
-    min_len_2 = length(avg_c_tw2)
+    # # Find the shortest curve, as average_curves did
+    # min_len_1 = length(avg_c_tw1)
+    # min_len_2 = length(avg_c_tw2)
 
-    # Create time axes. 
-    # The time step is snapshot_interval, but the *index* is just 0, 1, 2...
-    # Let's just save the data vs. the time difference.
+    # # Create time axes. 
+    # # The time step is snapshot_interval, but the *index* is just 0, 1, 2...
+    # # Let's just save the data vs. the time difference.
 
-    time_axis_1 = (0:(min_len_1-1)) .* parsed_args["snapshot_interval"]
-    time_axis_2 = (0:(min_len_2-1)) .* parsed_args["snapshot_interval"]
+    # time_axis_1 = (0:(min_len_1-1)) .* parsed_args["snapshot_interval"]
+    # time_axis_2 = (0:(min_len_2-1)) .* parsed_args["snapshot_interval"]
 
-    # Create a DataFrame (like a spreadsheet)
-    # We pad the shorter list with 'missing' so they can be in one file
-    max_len = max(min_len_1, min_len_2)
+    # # Create a DataFrame (like a spreadsheet)
+    # # We pad the shorter list with 'missing' so they can be in one file
+    # max_len = max(min_len_1, min_len_2)
 
-    df = DataFrame(
-        delta_t_1 = vcat(time_axis_1, fill(missing, max_len - min_len_1)),
-        C_tw1 = vcat(avg_c_tw1, fill(missing, max_len - min_len_1)),
-        delta_t_2 = vcat(time_axis_2, fill(missing, max_len - min_len_2)),
-        C_tw2 = vcat(avg_c_tw2, fill(missing, max_len - min_len_2)),
-    )
+    # df = DataFrame(
+    #     delta_t_1 = vcat(time_axis_1, fill(missing, max_len - min_len_1)),
+    #     C_tw1 = vcat(avg_c_tw1, fill(missing, max_len - min_len_1)),
+    #     delta_t_2 = vcat(time_axis_2, fill(missing, max_len - min_len_2)),
+    #     C_tw2 = vcat(avg_c_tw2, fill(missing, max_len - min_len_2)),
+    # )
 
-    # 4. Write to the file
-    CSV.write(parsed_args["output_file"], df)
+    # # 4. Write to the file
+    # CSV.write(parsed_args["output_file"], df)
 
     println("Results saved to $(parsed_args["output_file"])")
 end

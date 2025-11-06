@@ -107,7 +107,7 @@ function initialize_rates(L, hamiltonian_placements, spins, beta)
 
     # matrix containing flip rates at each site 
     # flip rate is now a fenwick tree
-    flip_rate = FenwickTree{Float64}(L * L)
+    flip_rates = FenwickTree{Float64}(L * L)
 
     for j = 1:L, i = 1:L
 
@@ -119,7 +119,7 @@ function initialize_rates(L, hamiltonian_placements, spins, beta)
         inc!(flip_rates, to_1d(i, j, L), w_i)
     end
 
-    return (flip_rate, total_rate)
+    return (flip_rates, total_rate)
 
 end
 
@@ -149,7 +149,7 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
     index_1d = DataStructures.index_at_prefixsum(flip_rates, spin_choice)
     (flipped_i, flipped_j) = to_2d(index_1d, L)
 
-    old_rate_k = flip_rates[index_1d] - (index_1d == 1 ? 0.0 : flip_rates[index_1d - 1])
+    old_rate_k = flip_rates[index_1d] - (index_1d == 1 ? 0.0 : flip_rates[index_1d-1])
 
     # Check if a spin was actually found (should always happen if total_rate > 0)
     if flipped_i == 0
@@ -159,7 +159,7 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
     end
 
     spins[flipped_i, flipped_j] *= -1
-        # 1. Calculate the new rate for the flipped spin
+    # 1. Calculate the new rate for the flipped spin
     new_delta_E_k =
         calculate_delta_E(flipped_i, flipped_j, L, hamiltonian_placements, spins)
     new_rate_k = 1 / (1 + exp(beta * new_delta_E_k))
@@ -177,11 +177,12 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
         index_j_1d = to_1d(ni, nj, L)
 
         # 2. Get the neighbor's OLD rate (using the O(log N) prefix sum trick)
-        old_rate_j = flip_rates[index_j_1d] - (index_j_1d == 1 ? 0.0 : flip_rates[index_j_1d - 1])
+        old_rate_j =
+            flip_rates[index_j_1d] - (index_j_1d == 1 ? 0.0 : flip_rates[index_j_1d-1])
 
         # 3. Calculate the neighbor's NEW rate (this is unchanged)
         new_delta_E_j = calculate_delta_E(ni, nj, L, hamiltonian_placements, spins)
-        new_rate_j = 1 / (1 + exp(beta * new_delta_E_j)) 
+        new_rate_j = 1 / (1 + exp(beta * new_delta_E_j))
 
         # 4. Update the FenwickTree with the new rate
         DataStructures.update!(flip_rates, index_j_1d, new_rate_j)
@@ -195,7 +196,7 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
 
 end
 
-function run_simulation_efficient(L, p, beta, T_max, snapshot_interval)
+function run_simulation(L, p, beta, T_max, snapshot_interval)
     """
     Runs a full simulation using the OPTIMIZED O(1) MCMC step.
     """
@@ -211,7 +212,7 @@ function run_simulation_efficient(L, p, beta, T_max, snapshot_interval)
     end
 
     flip_rates, total_rate = initialize_rates(L, hamiltonian_placements, spins, beta)
-    
+
 
     while current_time < T_max
 

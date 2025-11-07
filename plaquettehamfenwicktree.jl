@@ -236,6 +236,83 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
 
 end
 
+function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_rate)
+    """
+    Performs one O(log N) MCMC step, correctly updating all neighbor
+    and next-nearest-neighbor rates.
+    """
+    
+    # === 1. Handle Frozen State ===
+    if total_rate == 0.0
+        return ((nothing, nothing), Inf, total_rate)
+    end
+
+    # === 2. Calculate Time Step ===
+    delta_T = -log(rand()) / total_rate
+
+    # === 3. Select Spin to Flip (O(log N)) ===
+    spin_choice = rand() * total_rate
+    index_1d = find_index_at_prefixsum(flip_rates, spin_choice) 
+    (flipped_i, flipped_j) = to_2d(index_1d, L)
+
+    # === 4. Build the Set of All Affected Spins ===
+    # This set will contain the flipped spin, its 4 neighbors,
+    # and its 8 next-nearest neighbors (13 spins total).
+    # the 8 next-nearest neighbors still need to be accounted for
+    # because the neighbor's h_i terms are affected by the original
+    # spin flip. 
+
+    #set actually consists of tuples of coordinates. 
+    spins_to_update = Set{Tuple{Int, Int}}()
+    
+    # Add the flipped spin
+    push!(spins_to_update, (flipped_i, flipped_j))
+    
+    # Add its neighbors, and *their* neighbors (NNNs)
+    # set datastructure automatically gets rid of duplicates 
+    # this is still O(1) because at most this # is 13
+    # 13 is from: 4 original neighbors, 3 new neighbors-of-neighbors, and 1 original spin, 4*3+1
+    for (ni, nj) in find_neighbors(flipped_i, flipped_j, L)
+        push!(spins_to_update, (ni, nj)) # Add the neighbor
+        for (nni, nnj) in find_neighbors(ni, nj, L)
+            push!(spins_to_update, (nni, nnj)) # Add the NNN
+        end
+    end
+
+    # === 5. Get OLD Rates for all affected spins ===
+    # We must do this *before* we flip the spin.
+    
+    # This is a dictionary to store old rates: (i,j) => old_rate
+    old_rates = Dict{Tuple{Int, Int}, Float64}() 
+    
+    for (i, j) in spins_to_update
+        idx = to_1d(i, j, L)
+        old_rate = flip_rates[idx] - (idx == 1 ? 0.0 : flip_rates[idx - 1])
+        old_rates[(i, j)] = old_rate
+    end
+
+    # === 6. Flip the Chosen Spin ===
+    spins[flipped_i, flipped_j] *= -1
+
+    # === 7. Calculate NEW Rates and Update Tree ===
+    # We loop through the *same set* again, now that the
+    # spins array is updated.
+    
+    # go through every single spin involved with this flip
+    # and calculate the new flip_rates for all of them 
+    for (i, j) in spins_to_update
+        old_rate = old_rates[(i,j)]
+        new_delta_E = calculate_delta_E(i, j, L, hamiltonian_placements, spins)
+        new_rate = 1 / (1 + exp(beta * new_delta_E)) 
+        idx = to_1d(i,j,L)
+        delta_rate = new_rate - old_rate 
+        inc!(flip_rates, idx, delta_rate) 
+        total_rate += delta
+    end
+
+    return ((flipped_i, flipped_j), delta_T, total_rate)
+end
+
 function run_simulation(L, p, beta, T_max, snapshot_interval)
     """
     Runs a full simulation using the OPTIMIZED O(1) MCMC step.

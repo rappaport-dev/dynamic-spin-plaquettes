@@ -5,9 +5,9 @@
 #SBATCH --nodes=1                      # Run on a single node
 #SBATCH --ntasks=1                     # Run a single task (our script is serial)
 #SBATCH --cpus-per-task=1              # Only needs one CPU
-#SBATCH --partition=medium              # Or 'medium'/'long' - 'short' is too short
+#SBATCH --partition=short              # Or 'medium'/'long' - 'short' is too short
 #SBATCH --mem=16G                       # 4GB of memory should be plenty
-#SBATCH --time=24:00:00                # 24-hour run time
+#SBATCH --time=0:08:00                # 24-hour run time
 
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=rappapo@bc.edu     # Copied from your template
@@ -15,15 +15,17 @@
 #======================================================================
 # Part 1: Experiment Hyperparameters 🔬
 #======================================================================
-DESCRIPTION="Overnight L=32 plaquette model run (p=0.1, beta=6.0) to find energy plateaus."
+DESCRIPTION="very short test run with L = 128 (significant)" 
+
+#"Overnight L=32 plaquette model run (p=0.1, beta=6.0) to find energy plateaus."
 
 # Define all your MCMC hyperparameters here
-L_SIZE=32
+L_SIZE=128
 PROB_P=0.1
 BETA=6.0
 T_MAX=1000000.0
 SNAPSHOT_INTERVAL=100.0
-NUM_RUNS=20
+NUM_RUNS=1
 
 #======================================================================
 # Part 2: Setup and Reproducibility Logging ✍️
@@ -71,6 +73,8 @@ START_TIME=$SECONDS
 # (Based on your previous error message)
 cd /home/rappapo/plaquetteMCMC
 
+cp plotenergy.jl $OUTPUT_DIR
+
 # Activate the Julia environment
 module purge
 module load julia  # Or your cluster's specific Julia module
@@ -78,7 +82,7 @@ module load julia  # Or your cluster's specific Julia module
 echo "Starting Julia simulation..."
 
 # Run the Julia script with all hyperparameters
-julia plaquetteham.jl \
+julia plaquettehamfenwicktree.jl \
     --L $L_SIZE \
     --p $PROB_P \
     --beta $BETA \
@@ -89,6 +93,12 @@ julia plaquetteham.jl \
 
 END_TIME=$SECONDS
 DURATION=$((END_TIME - START_TIME))
+
+# note that i am trying to keep this out of the timing,
+# but i am too lazy to keep copying plotenergy.jl outside of the timing.
+# this is OK because i think that is extremely fast
+
+python plotenergy.jl -i $OUTPUT_FILE_PATH
 
 # Log the total runtime to your reproducibility file
 echo "" >> $LOG_FILE

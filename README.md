@@ -17,3 +17,9 @@ To run a simulation locally:
 ```bash
 julia simulation.jl --L 32 --p 0.1 --beta 6.0 --T_max 10000
 ```
+
+To submit a simulation to the cluster you can use Slurm:
+
+```batch
+sbatch run.sl
+```

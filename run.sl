@@ -98,7 +98,7 @@ DURATION=$((END_TIME - START_TIME))
 # but i am too lazy to keep copying plotenergy.jl outside of the timing.
 # this is OK because i think that is extremely fast
 
-python plotenergy.jl -i $OUTPUT_FILE_PATH
+julia plotenergy.jl -i $OUTPUT_FILE_PATH
 
 # Log the total runtime to your reproducibility file
 echo "" >> $LOG_FILE

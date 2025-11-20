@@ -161,80 +161,6 @@ function find_index_at_prefixsum(tree, value)
     return low # 'low' is now the first index i where tree[i] >= value
 end
 
-function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_rate)
-    """New version of mcmc step, it takes in a flip_rates and total_rates. """
-    """
-    Performs one rejection-free MCMC step using pre-calculated rates.
-    Modifies spins and flip_rates in place.
-    Returns the coordinates of the flipped spin (i, j), the time step delta_T,
-    and the *updated* total_rate
-    Now uses a FenwickTree as the datastructure 
-    """
-
-    # Handle frozen state
-    if total_rate == 0.0
-        # Return dummy coordinates, infinite time, and unchanged rate
-        return ((nothing, nothing), Inf)
-    end
-
-    #calculate delta T, 
-    delta_T = - log(rand()) / total_rate
-
-    # calculate the chosen flipped spin with the algorithm mentioned in the supp
-    spin_choice = rand()*total_rate
-
-    # datastructures replaces old code with Fenwick Tree- finds which spin to flip in O(log(N)) time 
-    index_1d = find_index_at_prefixsum(flip_rates, spin_choice)  
-    (flipped_i, flipped_j) = to_2d(index_1d, L)
-
-    old_rate_k = flip_rates[index_1d] - (index_1d == 1 ? 0.0 : flip_rates[index_1d-1])
-
-    # Check if a spin was actually found (should always happen if total_rate > 0)
-    if flipped_i == 0
-        # This case should ideally not be reached if total_rate > 0
-        println("Warning: Spin selection in mcmc_step failed unexpectedly.")
-        return ((nothing, nothing), delta_T, total_rate)
-    end
-
-    spins[flipped_i, flipped_j] *= -1
-
-    # 1. Calculate the new rate for the flipped spin
-    new_delta_E_k =
-        calculate_delta_E(flipped_i, flipped_j, L, hamiltonian_placements, spins)
-    new_rate_k = 1 / (1 + exp(beta * new_delta_E_k))
-
-    # 2. Calculate the CHANGE in rate
-    delta_k = new_rate_k - old_rate_k
-
-    # 3. Increment the FenwickTree by that change. This is the O(log N) update.
-    inc!(flip_rates, index_1d, delta_k)
-
-    # 4. Update the total_rate incrementally
-    total_rate = total_rate - old_rate_k + new_rate_k
-
-    # have to update the neighbor's spin flips too
-    for (ni, nj) in find_neighbors(flipped_i, flipped_j, L)
-
-        index_j_1d = to_1d(ni, nj, L)
-        old_rate_j = flip_rates[index_j_1d] - (index_j_1d == 1 ? 0.0 : flip_rates[index_j_1d - 1])
-
-        new_delta_E_j = calculate_delta_E(ni, nj, L, hamiltonian_placements, spins)
-        new_rate_j = 1 / (1 + exp(beta * new_delta_E_j)) 
-
-        # 4. Calculate the CHANGE in rate for the neighbor
-        delta_j = new_rate_j - old_rate_j
-
-        # 5. Increment the FenwickTree by that change
-        inc!(flip_rates, index_j_1d, delta_j)
-
-        # 6. Update the total_rate incrementally
-        total_rate = total_rate - old_rate_j + new_rate_j
-
-    end
-
-    return ((flipped_i, flipped_j), delta_T, total_rate)
-
-end
 
 function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_rate)
     """
@@ -307,7 +233,7 @@ function mcmc_step!(L, hamiltonian_placements, spins, beta, flip_rates, total_ra
         idx = to_1d(i,j,L)
         delta_rate = new_rate - old_rate 
         inc!(flip_rates, idx, delta_rate) 
-        total_rate += delta
+        total_rate += delta_rate
     end
 
     return ((flipped_i, flipped_j), delta_T, total_rate)
